@@ -1,0 +1,9 @@
+spring:
+    application:
+        name: email-reader
+    profiles:
+      active: "dev"
+
+account:
+  username: {{account.username}}
+  password: {{account.password}}
