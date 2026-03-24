@@ -3,37 +3,40 @@ package com.toskafx.email_reader.config;
 import jakarta.mail.Authenticator;
 import jakarta.mail.PasswordAuthentication;
 import jakarta.mail.Session;
-import org.springframework.beans.factory.annotation.Value;
+import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.mail.javamail.JavaMailSenderImpl;
 
 import java.util.Properties;
 
 @Configuration
+@RequiredArgsConstructor
 public class ApplicationConfig {
 
-    @Value("${account.username}")
-    private String username;
+    private final EmailAccountProperties emailAccountProperties;
 
-    @Value("${account.password}")
-    private String password;
-
+    /**
+     * Builds a Jakarta Mail Session configured for IMAP reading.
+     * Provider-specific host/port are resolved dynamically from EmailProvider enum,
+     * so switching between Gmail and Outlook only requires a config change.
+     */
     @Bean
     public Session emailSession() {
-        JavaMailSenderImpl javaMail = new JavaMailSenderImpl();
-        Properties props = javaMail.getJavaMailProperties();
+        Properties props = new Properties();
 
-        props.put("mail.smtp.host", "smtp.gmail.com");
-        props.put("mail.smtp.port", 465);
-        props.put("mail.transport.protocol", "smtp");
-        props.put("mail.smtp.auth", "true");
-        props.put("mail.smtp.starttls.enable", "true");
+        String host = emailAccountProperties.getProvider().getImapHost();
+        int port    = emailAccountProperties.getProvider().getImapPort();
+
+        props.put("mail.imaps.host", host);
+        props.put("mail.imaps.port", String.valueOf(port));
+        props.put("mail.imaps.ssl.enable", "true");
+        props.put("mail.imaps.auth", "true");
+        props.put("mail.imaps.connectiontimeout", "10000");
+        props.put("mail.imaps.timeout", "10000");
         props.put("mail.debug", "false");
-        props.put("mail.smtp.socketFactory.fallback", "true");
-        props.put("mail.smtp.ssl.enable", "true");
-        props.put("mail.smtp.connectiontimeout", "90000");
-        props.put("mail.smtp.writetimeout", "90000");
+
+        String username = emailAccountProperties.getUsername();
+        String password = emailAccountProperties.getPassword();
 
         return Session.getInstance(props, new Authenticator() {
             @Override
@@ -42,5 +45,4 @@ public class ApplicationConfig {
             }
         });
     }
-
 }

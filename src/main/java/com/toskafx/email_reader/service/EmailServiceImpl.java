@@ -5,15 +5,22 @@ import com.toskafx.email_reader.dto.InboundEmailDto;
 import com.toskafx.email_reader.util.EmailBodyExtractor;
 import jakarta.mail.*;
 import jakarta.mail.internet.InternetAddress;
+import jakarta.mail.search.AndTerm;
+import jakarta.mail.search.ComparisonTerm;
 import jakarta.mail.search.FlagTerm;
+import jakarta.mail.search.ReceivedDateTerm;
+import jakarta.mail.search.SearchTerm;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Date;
 import java.util.List;
 
 @Slf4j
@@ -38,10 +45,15 @@ public class EmailServiceImpl implements EmailService {
             try (Folder inbox = store.getFolder("INBOX")) {
                 inbox.open(Folder.READ_WRITE); // READ_WRITE required to mark messages as seen
 
-                // Fetch only UNSEEN messages — no re-processing of already-read emails
-                Message[] messages = inbox.search(
-                        new FlagTerm(new Flags(Flags.Flag.SEEN), false)
-                );
+                // Build a compound search: UNSEEN AND received today.
+                // ReceivedDateTerm with GE filters out all emails from previous days.
+                // Note: IMAP ReceivedDateTerm compares at day granularity for GE/LE,
+                // so a single GE start-of-today is sufficient — no upper bound needed.
+                SearchTerm unseenTerm    = new FlagTerm(new Flags(Flags.Flag.SEEN), false);
+                SearchTerm receivedToday = todayReceivedDateTerm();
+                SearchTerm combinedTerm  = new AndTerm(unseenTerm, receivedToday);
+
+                Message[] messages = inbox.search(combinedTerm);
 
                 log.info("Found {} unread email(s) in inbox for [{}]", messages.length, username);
 
@@ -96,6 +108,29 @@ public class EmailServiceImpl implements EmailService {
     // -------------------------------------------------------------------------
     // Private helpers
     // -------------------------------------------------------------------------
+
+    /**
+     * Builds a {@link ReceivedDateTerm} that matches emails received on or after
+     * the start of today in the system's default time zone.
+     *
+     * Why start-of-day and not "now minus 24 hours"?
+     * The requirement is "current day" — meaning emails received today regardless
+     * of the exact time. Using midnight (00:00:00) as the lower bound ensures an
+     * email received at 00:05 is included even if the first poll runs at 06:00.
+     *
+     * Why not also add a GE end-of-today upper bound?
+     * IMAP's ReceivedDateTerm with GE operates at day granularity on most servers,
+     * so future-dated emails within the same day are naturally included. Adding a
+     * LE end-of-today is safe but redundant for same-day polling.
+     */
+    private SearchTerm todayReceivedDateTerm() {
+        Date startOfToday = Date.from(
+                LocalDate.now(ZoneId.systemDefault())
+                        .atStartOfDay(ZoneId.systemDefault())
+                        .toInstant()
+        );
+        return new ReceivedDateTerm(ComparisonTerm.GE, startOfToday);
+    }
 
     private InboundEmailDto parseMessage(Message message) throws Exception {
         // Subject
