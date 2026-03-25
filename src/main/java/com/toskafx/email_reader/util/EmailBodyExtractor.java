@@ -1,96 +1,182 @@
 package com.toskafx.email_reader.util;
 
+import com.toskafx.email_reader.dto.EmailAttachmentDto;
 import jakarta.mail.BodyPart;
 import jakarta.mail.MessagingException;
 import jakarta.mail.Multipart;
 import jakarta.mail.Part;
 import lombok.experimental.UtilityClass;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.io.IOUtils;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
- * Utility for extracting readable text content from Jakarta Mail Message parts.
+ * Utility for extracting both the readable body text and attachments from
+ * a Jakarta Mail Message.
  *
- * Email bodies come in three structural forms:
- *  - Simple text/plain
- *  - Simple text/html
- *  - multipart/alternative or multipart/mixed (nested parts, attachments, etc.)
+ * Email MIME structures come in three forms:
+ *   - Simple:          text/plain or text/html at the top level
+ *   - Alternative:     multipart/alternative — multiple formats of the same content
+ *                      (plain + html), pick the best one
+ *   - Mixed/related:   multipart/mixed or multipart/related — body + attachments
  *
- * This extractor walks the MIME tree and returns the best available plain text.
- * HTML is stripped to raw text. Attachments are ignored.
+ * This extractor walks the entire MIME tree in one pass, collecting both
+ * the best available body text and all file attachments simultaneously.
  */
 @Slf4j
 @UtilityClass
 public class EmailBodyExtractor {
 
     /**
-     * Recursively extracts a plain-text representation of the email body.
-     *
-     * @param part the top-level message or a nested body part
-     * @return extracted text, or empty string if nothing readable is found
+     * Result container holding both the extracted body and any attachments
+     * found in the same MIME tree traversal.
      */
-    public String extract(Part part) {
+    public record ExtractionResult(String body, List<EmailAttachmentDto> attachments) {
+        public static ExtractionResult empty() {
+            return new ExtractionResult("", new ArrayList<>());
+        }
+    }
+
+    /**
+     * Entry point — extracts body text and attachments from a message Part in one pass.
+     *
+     * @param part the top-level message or nested body part
+     * @return ExtractionResult containing body text and list of attachments
+     */
+    public ExtractionResult extract(Part part) {
+        List<EmailAttachmentDto> attachments = new ArrayList<>();
+        String body = extractPart(part, attachments);
+        return new ExtractionResult(body, attachments);
+    }
+
+    // -------------------------------------------------------------------------
+    // Private recursive MIME walker
+    // -------------------------------------------------------------------------
+
+    private String extractPart(Part part, List<EmailAttachmentDto> attachments) {
         try {
-            // Plain text — ideal, return as-is
+            // --- Attachment detection ---
+            // A part is an attachment if it has a Content-Disposition of "attachment"
+            // OR if it has a filename declared (some clients omit the disposition header)
+            String disposition = part.getDisposition();
+            String filename    = part.getFileName();
+
+            boolean isAttachment = Part.ATTACHMENT.equalsIgnoreCase(disposition)
+                    || (filename != null && !filename.isBlank());
+
+            if (isAttachment) {
+                extractAttachment(part, filename, attachments);
+                return "";  // Attachment parts have no body text to contribute
+            }
+
+            // --- Plain text — preferred body format ---
             if (part.isMimeType("text/plain")) {
                 return (String) part.getContent();
             }
 
-            // HTML — strip tags to get readable text
+            // --- HTML — strip tags to produce readable text ---
             if (part.isMimeType("text/html")) {
-                String html = (String) part.getContent();
-                return stripHtml(html);
+                return stripHtml((String) part.getContent());
             }
 
-            // Multipart: walk each child part recursively
+            // --- Multipart: recurse into child parts ---
             if (part.isMimeType("multipart/*")) {
-                Multipart multipart = (Multipart) part.getContent();
-                StringBuilder sb = new StringBuilder();
-
-                for (int i = 0; i < multipart.getCount(); i++) {
-                    BodyPart bodyPart = multipart.getBodyPart(i);
-
-                    // Skip attachments — only process inline content
-                    String disposition = bodyPart.getDisposition();
-                    if (Part.ATTACHMENT.equalsIgnoreCase(disposition)) {
-                        continue;
-                    }
-
-                    String extracted = extract(bodyPart);
-                    if (extracted != null && !extracted.isBlank()) {
-                        sb.append(extracted);
-                        // For multipart/alternative, first successful result is enough
-                        if (part.isMimeType("multipart/alternative")) {
-                            break;
-                        }
-                    }
-                }
-
-                return sb.toString().trim();
+                return extractMultipart(part, attachments);
             }
 
         } catch (MessagingException | IOException e) {
-            log.warn("Failed to extract email body from part of type '{}': {}",
+            log.warn("Failed to extract part (contentType='{}'): {}",
                     safeGetContentType(part), e.getMessage());
         }
 
         return "";
     }
 
+    private String extractMultipart(Part part, List<EmailAttachmentDto> attachments)
+            throws MessagingException, IOException {
+
+        Multipart multipart = (Multipart) part.getContent();
+        StringBuilder bodyAccumulator = new StringBuilder();
+
+        for (int i = 0; i < multipart.getCount(); i++) {
+            BodyPart childPart = multipart.getBodyPart(i);
+            String extracted = extractPart(childPart, attachments);
+
+            if (!extracted.isBlank()) {
+                bodyAccumulator.append(extracted);
+
+                // For multipart/alternative (e.g. plain + html versions of the same content),
+                // stop after the first non-empty part — prefer plain text over HTML
+                // since plain text appears first in well-formed alternative messages.
+                if (part.isMimeType("multipart/alternative")) {
+                    break;
+                }
+            }
+        }
+
+        return bodyAccumulator.toString().trim();
+    }
+
+    private void extractAttachment(Part part, String filename,
+                                   List<EmailAttachmentDto> attachments) {
+        try {
+            String contentType = sanitizeContentType(part.getContentType());
+
+            // Guard: skip attachments with no filename — they can't be saved meaningfully
+            if (filename == null || filename.isBlank()) {
+                log.debug("Skipping unnamed attachment of type '{}'", contentType);
+                return;
+            }
+
+            byte[] content;
+            try (InputStream is = part.getInputStream()) {
+                content = IOUtils.toByteArray(is);
+            }
+
+            if (content.length == 0) {
+                log.warn("Skipping empty attachment '{}'", filename);
+                return;
+            }
+
+            attachments.add(EmailAttachmentDto.builder()
+                    .filename(filename)
+                    .contentType(contentType)
+                    .content(content)
+                    .build());
+
+            log.debug("Extracted attachment '{}' ({} bytes, type: {})",
+                    filename, content.length, contentType);
+
+        } catch (MessagingException | IOException e) {
+            log.error("Failed to extract attachment '{}': {}", filename, e.getMessage(), e);
+            // Do not rethrow — a failed attachment should not abort body extraction
+            // or prevent the ticket from being created
+        }
+    }
+
     /**
-     * Minimal HTML stripper — removes tags and decodes common HTML entities.
-     * For production use with complex HTML emails, consider Jsoup.
+     * Strips MIME type parameters (e.g. "application/pdf; name=file.pdf" → "application/pdf").
+     * The upload service expects a clean MIME type string.
      */
+    private String sanitizeContentType(String rawContentType) {
+        if (rawContentType == null) return "application/octet-stream";
+        int semicolon = rawContentType.indexOf(';');
+        return (semicolon > 0 ? rawContentType.substring(0, semicolon) : rawContentType).trim();
+    }
+
     private String stripHtml(String html) {
         if (html == null || html.isBlank()) return "";
         return html
-                .replaceAll("<[^>]+>", "")         // remove tags
+                .replaceAll("<[^>]+>", "")
                 .replace("&amp;", "&")
                 .replace("&lt;", "<")
                 .replace("&gt;", ">")
                 .replace("&nbsp;", " ")
-                .replaceAll("\\s{2,}", " ")          // collapse whitespace
+                .replaceAll("\\s{2,}", " ")
                 .trim();
     }
 

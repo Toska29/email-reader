@@ -4,14 +4,12 @@ import lombok.Builder;
 import lombok.Getter;
 
 import java.time.Instant;
+import java.util.Collections;
+import java.util.List;
 
 /**
- * Immutable value object representing a parsed inbound email.
- * Passed from the email reading layer to the ticket creation layer.
- *
- * messageId is the RFC 2822 Message-ID header — it is the deduplication
- * key used to prevent the same email from generating multiple tickets,
- * even if the SEEN flag is changed back to unread on the mail server.
+ * Immutable value object representing a fully parsed inbound email,
+ * including any file attachments extracted from the MIME structure.
  */
 @Getter
 @Builder
@@ -25,4 +23,11 @@ public class InboundEmailDto {
     private final String senderEmail;
     private final String senderName;
     private final Instant receivedAt;
+
+    /**
+     * Attachments extracted from the email's MIME structure.
+     * Empty list if the email had no attachments — never null.
+     */
+    @Builder.Default
+    private final List<EmailAttachmentDto> attachments = Collections.emptyList();
 }

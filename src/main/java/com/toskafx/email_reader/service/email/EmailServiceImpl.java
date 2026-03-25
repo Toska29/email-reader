@@ -5,6 +5,7 @@ import com.toskafx.email_reader.dto.InboundEmailDto;
 import com.toskafx.email_reader.enums.EmailProvider.AuthMechanism;
 import com.toskafx.email_reader.service.outlook.OutlookOAuthTokenService;
 import com.toskafx.email_reader.util.EmailBodyExtractor;
+import com.toskafx.email_reader.util.EmailBodyExtractor.ExtractionResult;
 import jakarta.mail.*;
 import jakarta.mail.internet.InternetAddress;
 import jakarta.mail.search.AndTerm;
@@ -47,7 +48,6 @@ public class EmailServiceImpl implements EmailService {
             try (Folder inbox = store.getFolder("INBOX")) {
                 inbox.open(Folder.READ_WRITE);
 
-                // Compound search: UNSEEN AND received today
                 SearchTerm unseenTerm    = new FlagTerm(new Flags(Flags.Flag.SEEN), false);
                 SearchTerm receivedToday = todayReceivedDateTerm();
                 SearchTerm combinedTerm  = new AndTerm(unseenTerm, receivedToday);
@@ -113,8 +113,7 @@ public class EmailServiceImpl implements EmailService {
             store.connect(host, username, accessToken);
             log.debug("Connected to [{}] via OAuth2/XOAUTH2", host);
         } else {
-            String password = emailAccountProperties.getPassword();
-            store.connect(host, username, password);
+            store.connect(host, username, emailAccountProperties.getPassword());
             log.debug("Connected to [{}] via App Password", host);
         }
     }
@@ -129,16 +128,19 @@ public class EmailServiceImpl implements EmailService {
     }
 
     private InboundEmailDto parseMessage(Message message) throws Exception {
-        // Message-ID is the RFC 2822 unique identifier — this is our deduplication key.
-        // Every compliant email server sets this. We fall back to a synthetic ID
-        // only as a last resort for malformed/non-standard messages.
+        // Message-ID — deduplication key
         String[] messageIdHeaders = message.getHeader("Message-ID");
         String messageId = (messageIdHeaders != null && messageIdHeaders.length > 0)
                 ? messageIdHeaders[0].trim()
                 : generateFallbackId(message);
 
         String subject = message.getSubject() != null ? message.getSubject() : "(no subject)";
-        String body    = EmailBodyExtractor.extract(message);
+
+        // Single MIME tree walk — extracts body text AND attachments together
+        ExtractionResult extraction = EmailBodyExtractor.extract(message);
+
+        log.debug("Parsed email — messageId: '{}', subject: '{}', attachments: {}",
+                messageId, subject, extraction.attachments().size());
 
         Address[] from = message.getFrom();
         String senderEmail = "";
@@ -159,29 +161,21 @@ public class EmailServiceImpl implements EmailService {
                 ? message.getReceivedDate().toInstant()
                 : Instant.now();
 
-        log.debug("Parsed email — messageId: '{}', subject: '{}', from: '{}' <{}>",
-                messageId, subject, senderName, senderEmail);
-
         return InboundEmailDto.builder()
                 .messageId(messageId)
                 .subject(subject)
-                .body(body)
+                .body(extraction.body())
+                .attachments(extraction.attachments())
                 .senderEmail(senderEmail)
                 .senderName(senderName)
                 .receivedAt(receivedAt)
                 .build();
     }
 
-    /**
-     * Safety net for the rare case where a message has no Message-ID header.
-     * Produces a deterministic ID from available fields so the same malformed
-     * email always maps to the same fallback ID across poll cycles.
-     */
     private String generateFallbackId(Message message) {
         try {
             String subject = message.getSubject() != null ? message.getSubject() : "";
-            String date    = message.getReceivedDate() != null
-                    ? message.getReceivedDate().toString() : "";
+            String date    = message.getReceivedDate() != null ? message.getReceivedDate().toString() : "";
             Address[] from = message.getFrom();
             String sender  = (from != null && from.length > 0) ? from[0].toString() : "";
             return "fallback-" + Integer.toHexString((subject + sender + date).hashCode());
