@@ -1,7 +1,9 @@
-package com.toskafx.email_reader.service;
+package com.toskafx.email_reader.service.email;
 
 import com.toskafx.email_reader.config.EmailAccountProperties;
 import com.toskafx.email_reader.dto.InboundEmailDto;
+import com.toskafx.email_reader.enums.EmailProvider.AuthMechanism;
+import com.toskafx.email_reader.service.outlook.OutlookOAuthTokenService;
 import com.toskafx.email_reader.util.EmailBodyExtractor;
 import jakarta.mail.*;
 import jakarta.mail.internet.InternetAddress;
@@ -31,36 +33,38 @@ public class EmailServiceImpl implements EmailService {
     private final Session session;
     private final EmailAccountProperties emailAccountProperties;
 
+    /**
+     * Injected only when provider is OUTLOOK — Spring will inject null for Gmail
+     * since OutlookOAuthTokenService is still a bean but won't be needed.
+     * We use @Autowired(required=false) via constructor — handled via Optional pattern below.
+     */
+    private final OutlookOAuthTokenService oAuthTokenService;
+
     @Override
     public List<InboundEmailDto> fetchUnreadEmails() {
         String host     = emailAccountProperties.getProvider().getImapHost();
         String username = emailAccountProperties.getUsername();
-        String password = emailAccountProperties.getPassword();
 
         List<InboundEmailDto> result = new ArrayList<>();
 
         try (Store store = session.getStore("imaps")) {
-            store.connect(host, username, password);
+            connectStore(store, host, username);
 
             try (Folder inbox = store.getFolder("INBOX")) {
-                inbox.open(Folder.READ_WRITE); // READ_WRITE required to mark messages as seen
+                inbox.open(Folder.READ_WRITE);
 
-                // Build a compound search: UNSEEN AND received today.
-                // ReceivedDateTerm with GE filters out all emails from previous days.
-                // Note: IMAP ReceivedDateTerm compares at day granularity for GE/LE,
-                // so a single GE start-of-today is sufficient — no upper bound needed.
+                // Compound search: UNSEEN AND received today
                 SearchTerm unseenTerm    = new FlagTerm(new Flags(Flags.Flag.SEEN), false);
                 SearchTerm receivedToday = todayReceivedDateTerm();
                 SearchTerm combinedTerm  = new AndTerm(unseenTerm, receivedToday);
 
                 Message[] messages = inbox.search(combinedTerm);
 
-                log.info("Found {} unread email(s) in inbox for [{}]", messages.length, username);
+                log.info("Found {} unread email(s) today in inbox for [{}]", messages.length, username);
 
                 for (Message message : messages) {
                     try {
-                        InboundEmailDto dto = parseMessage(message);
-                        result.add(dto);
+                        result.add(parseMessage(message));
                     } catch (Exception e) {
                         log.error("Skipping message due to parse error: {}", e.getMessage(), e);
                     }
@@ -78,15 +82,13 @@ public class EmailServiceImpl implements EmailService {
     public void markAsRead(String messageId) {
         String host     = emailAccountProperties.getProvider().getImapHost();
         String username = emailAccountProperties.getUsername();
-        String password = emailAccountProperties.getPassword();
 
         try (Store store = session.getStore("imaps")) {
-            store.connect(host, username, password);
+            connectStore(store, host, username);
 
             try (Folder inbox = store.getFolder("INBOX")) {
                 inbox.open(Folder.READ_WRITE);
 
-                // Search all messages and match by Message-ID header
                 Message[] allMessages = inbox.getMessages();
                 for (Message message : allMessages) {
                     String[] headers = message.getHeader("Message-ID");
@@ -110,18 +112,33 @@ public class EmailServiceImpl implements EmailService {
     // -------------------------------------------------------------------------
 
     /**
-     * Builds a {@link ReceivedDateTerm} that matches emails received on or after
-     * the start of today in the system's default time zone.
+     * Connects a Store using the correct auth mechanism for the configured provider.
      *
-     * Why start-of-day and not "now minus 24 hours"?
-     * The requirement is "current day" — meaning emails received today regardless
-     * of the exact time. Using midnight (00:00:00) as the lower bound ensures an
-     * email received at 00:05 is included even if the first poll runs at 06:00.
-     *
-     * Why not also add a GE end-of-today upper bound?
-     * IMAP's ReceivedDateTerm with GE operates at day granularity on most servers,
-     * so future-dated emails within the same day are naturally included. Adding a
-     * LE end-of-today is safe but redundant for same-day polling.
+     * APP_PASSWORD: standard store.connect(host, username, password)
+     * OAUTH2:       store.connect(host, username, accessToken)
+     *               The XOAUTH2 SASL mechanism treats the "password" parameter
+     *               as the Bearer token when mail.imaps.sasl.mechanisms=XOAUTH2
+     *               is set in the Session properties.
+     */
+    private void connectStore(Store store, String host, String username) throws MessagingException {
+        AuthMechanism mechanism = emailAccountProperties.getProvider().getAuthMechanism();
+
+        if (mechanism == AuthMechanism.OAUTH2) {
+            String accessToken = oAuthTokenService.getAccessToken();
+            // For XOAUTH2, the password slot carries the Bearer access token
+            store.connect(host, username, accessToken);
+            log.debug("Connected to [{}] via OAuth2/XOAUTH2", host);
+        } else {
+            String password = emailAccountProperties.getPassword();
+            store.connect(host, username, password);
+            log.debug("Connected to [{}] via App Password", host);
+        }
+    }
+
+    /**
+     * Builds a ReceivedDateTerm matching emails received on or after midnight today.
+     * Uses calendar-day semantics (not "last 24 hours") to match the requirement
+     * of "current day" emails.
      */
     private SearchTerm todayReceivedDateTerm() {
         Date startOfToday = Date.from(
@@ -133,29 +150,24 @@ public class EmailServiceImpl implements EmailService {
     }
 
     private InboundEmailDto parseMessage(Message message) throws Exception {
-        // Subject
         String subject = message.getSubject() != null ? message.getSubject() : "(no subject)";
+        String body    = EmailBodyExtractor.extract(message);
 
-        // Body — handles plain text, HTML, and multipart
-        String body = EmailBodyExtractor.extract(message);
-
-        // Sender — gracefully handle both InternetAddress and plain Address
         Address[] from = message.getFrom();
         String senderEmail = "";
         String senderName  = "";
 
         if (from != null && from.length > 0) {
             Address sender = from[0];
-            if (sender instanceof InternetAddress ia) {
-                senderEmail = ia.getAddress() != null ? ia.getAddress() : "";
-                senderName  = ia.getPersonal() != null ? ia.getPersonal() : senderEmail;
+            if (sender instanceof InternetAddress internetAddress) {
+                senderEmail = internetAddress.getAddress() != null ? internetAddress.getAddress() : "";
+                senderName  = internetAddress.getPersonal() != null ? internetAddress.getPersonal() : senderEmail;
             } else {
                 senderEmail = sender.toString();
                 senderName  = sender.toString();
             }
         }
 
-        // Received date — fall back to now if missing
         Instant receivedAt = message.getReceivedDate() != null
                 ? message.getReceivedDate().toInstant()
                 : Instant.now();

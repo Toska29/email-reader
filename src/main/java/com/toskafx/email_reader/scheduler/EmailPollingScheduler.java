@@ -1,8 +1,8 @@
 package com.toskafx.email_reader.scheduler;
 
 import com.toskafx.email_reader.dto.InboundEmailDto;
-import com.toskafx.email_reader.service.EmailService;
-import com.toskafx.email_reader.service.TicketService;
+import com.toskafx.email_reader.service.email.EmailService;
+import com.toskafx.email_reader.service.ticket.TicketService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;

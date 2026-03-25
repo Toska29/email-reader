@@ -1,6 +1,6 @@
 package com.toskafx.email_reader.controller;
 
-import com.toskafx.email_reader.service.EmailService;
+import com.toskafx.email_reader.service.email.EmailService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -15,6 +15,5 @@ public class EmailReaderController {
 
     @GetMapping("/retrieve")
     public void retrieveEmails() {
-        emailService.retrieveEmails();
     }
 }

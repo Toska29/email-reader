@@ -1,17 +1,33 @@
 spring:
-    application:
-        name: email-reader
-    profiles:
-      active: "dev"
+  application:
+    name: email-reader
+  profiles:
+    active: "dev"
 
 email:
   account:
-    # Bind credentials from environment variables — never hardcode secrets
     username: ${EMAIL_USERNAME}
-    password: ${EMAIL_PASSWORD}
 
-    # Switch provider here: GMAIL or OUTLOOK (values from EmailProvider enum)
+    # --- Gmail (APP_PASSWORD) ---
+    # Set provider=GMAIL and supply the App Password generated from:
+    # Google Account → Security → 2-Step Verification → App Passwords
+    password: ${EMAIL_PASSWORD:}
+
+    # --- Outlook (OAUTH2) ---
+    # Set provider=OUTLOOK and supply Azure AD app registration credentials.
+    # Leave password blank — OAuth2 does not use it.
+    # Steps to obtain these:
+    #   1. Go to https://portal.azure.com → Azure Active Directory → App Registrations
+    #   2. New Registration → note the Application (client) ID and Directory (tenant) ID
+    #   3. Certificates & Secrets → New client secret → note the Value
+    #   4. API Permissions → Add → Microsoft Graph (or Exchange) → Application permissions
+    #      → IMAP.AccessAsApp → Grant admin consent
+    client-id:     ${OUTLOOK_CLIENT_ID:}
+    client-secret: ${OUTLOOK_CLIENT_SECRET:}
+    tenant-id:     ${OUTLOOK_TENANT_ID:}
+
+    # Switch provider here: GMAIL or OUTLOOK
     provider: ${EMAIL_PROVIDER:GMAIL}
 
-    # How often to poll for new emails (milliseconds). Default: 60 seconds
+    # Polling interval in milliseconds (default: 60 seconds)
     polling-interval-ms: ${EMAIL_POLLING_INTERVAL_MS:60000}

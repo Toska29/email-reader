@@ -1,4 +1,4 @@
-package com.toskafx.email_reader.service;
+package com.toskafx.email_reader.service.email;
 
 import com.toskafx.email_reader.dto.InboundEmailDto;
 

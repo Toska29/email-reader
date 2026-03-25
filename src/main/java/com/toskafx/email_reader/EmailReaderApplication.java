@@ -1,12 +1,13 @@
 package com.toskafx.email_reader;
 
+import com.toskafx.email_reader.config.EmailAccountProperties;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
 @SpringBootApplication
-@EnableConfigurationProperties
+@EnableConfigurationProperties({EmailAccountProperties.class})
 @EnableScheduling
 public class EmailReaderApplication {
 
