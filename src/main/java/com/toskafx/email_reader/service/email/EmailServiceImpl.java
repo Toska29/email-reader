@@ -32,12 +32,6 @@ public class EmailServiceImpl implements EmailService {
 
     private final Session session;
     private final EmailAccountProperties emailAccountProperties;
-
-    /**
-     * Injected only when provider is OUTLOOK — Spring will inject null for Gmail
-     * since OutlookOAuthTokenService is still a bean but won't be needed.
-     * We use @Autowired(required=false) via constructor — handled via Optional pattern below.
-     */
     private final OutlookOAuthTokenService oAuthTokenService;
 
     @Override
@@ -111,21 +105,11 @@ public class EmailServiceImpl implements EmailService {
     // Private helpers
     // -------------------------------------------------------------------------
 
-    /**
-     * Connects a Store using the correct auth mechanism for the configured provider.
-     *
-     * APP_PASSWORD: standard store.connect(host, username, password)
-     * OAUTH2:       store.connect(host, username, accessToken)
-     *               The XOAUTH2 SASL mechanism treats the "password" parameter
-     *               as the Bearer token when mail.imaps.sasl.mechanisms=XOAUTH2
-     *               is set in the Session properties.
-     */
     private void connectStore(Store store, String host, String username) throws MessagingException {
         AuthMechanism mechanism = emailAccountProperties.getProvider().getAuthMechanism();
 
         if (mechanism == AuthMechanism.OAUTH2) {
             String accessToken = oAuthTokenService.getAccessToken();
-            // For XOAUTH2, the password slot carries the Bearer access token
             store.connect(host, username, accessToken);
             log.debug("Connected to [{}] via OAuth2/XOAUTH2", host);
         } else {
@@ -135,11 +119,6 @@ public class EmailServiceImpl implements EmailService {
         }
     }
 
-    /**
-     * Builds a ReceivedDateTerm matching emails received on or after midnight today.
-     * Uses calendar-day semantics (not "last 24 hours") to match the requirement
-     * of "current day" emails.
-     */
     private SearchTerm todayReceivedDateTerm() {
         Date startOfToday = Date.from(
                 LocalDate.now(ZoneId.systemDefault())
@@ -150,6 +129,14 @@ public class EmailServiceImpl implements EmailService {
     }
 
     private InboundEmailDto parseMessage(Message message) throws Exception {
+        // Message-ID is the RFC 2822 unique identifier — this is our deduplication key.
+        // Every compliant email server sets this. We fall back to a synthetic ID
+        // only as a last resort for malformed/non-standard messages.
+        String[] messageIdHeaders = message.getHeader("Message-ID");
+        String messageId = (messageIdHeaders != null && messageIdHeaders.length > 0)
+                ? messageIdHeaders[0].trim()
+                : generateFallbackId(message);
+
         String subject = message.getSubject() != null ? message.getSubject() : "(no subject)";
         String body    = EmailBodyExtractor.extract(message);
 
@@ -159,9 +146,9 @@ public class EmailServiceImpl implements EmailService {
 
         if (from != null && from.length > 0) {
             Address sender = from[0];
-            if (sender instanceof InternetAddress internetAddress) {
-                senderEmail = internetAddress.getAddress() != null ? internetAddress.getAddress() : "";
-                senderName  = internetAddress.getPersonal() != null ? internetAddress.getPersonal() : senderEmail;
+            if (sender instanceof InternetAddress ia) {
+                senderEmail = ia.getAddress() != null ? ia.getAddress() : "";
+                senderName  = ia.getPersonal() != null ? ia.getPersonal() : senderEmail;
             } else {
                 senderEmail = sender.toString();
                 senderName  = sender.toString();
@@ -172,14 +159,34 @@ public class EmailServiceImpl implements EmailService {
                 ? message.getReceivedDate().toInstant()
                 : Instant.now();
 
-        log.debug("Parsed email — subject: '{}', from: '{}' <{}>", subject, senderName, senderEmail);
+        log.debug("Parsed email — messageId: '{}', subject: '{}', from: '{}' <{}>",
+                messageId, subject, senderName, senderEmail);
 
         return InboundEmailDto.builder()
+                .messageId(messageId)
                 .subject(subject)
                 .body(body)
                 .senderEmail(senderEmail)
                 .senderName(senderName)
                 .receivedAt(receivedAt)
                 .build();
+    }
+
+    /**
+     * Safety net for the rare case where a message has no Message-ID header.
+     * Produces a deterministic ID from available fields so the same malformed
+     * email always maps to the same fallback ID across poll cycles.
+     */
+    private String generateFallbackId(Message message) {
+        try {
+            String subject = message.getSubject() != null ? message.getSubject() : "";
+            String date    = message.getReceivedDate() != null
+                    ? message.getReceivedDate().toString() : "";
+            Address[] from = message.getFrom();
+            String sender  = (from != null && from.length > 0) ? from[0].toString() : "";
+            return "fallback-" + Integer.toHexString((subject + sender + date).hashCode());
+        } catch (MessagingException e) {
+            return "fallback-" + System.nanoTime();
+        }
     }
 }

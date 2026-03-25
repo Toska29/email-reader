@@ -7,38 +7,29 @@ import org.springframework.stereotype.Service;
 /**
  * Stub implementation of TicketService.
  *
- * In your main project, replace this with the real implementation that
- * maps InboundEmailDto fields to your existing Ticket model and persists
- * via your TicketRepository.
+ * In your main project replace this body with real persistence:
  *
- * Example mapping:
+ *   Ticket ticket = new Ticket();
  *   ticket.setTitle(email.getSubject());
  *   ticket.setDescription(email.getBody());
  *   ticket.setRequesterEmail(email.getSenderEmail());
  *   ticket.setRequesterName(email.getSenderName());
  *   ticket.setCreatedAt(email.getReceivedAt());
  *   ticket.setStatus(TicketStatus.OPEN);
- *   ticketRepository.save(ticket);
+ *   Ticket saved = ticketRepository.save(ticket);
+ *   return saved.getId();   // <-- return the persisted ID
  */
 @Slf4j
 @Service
 public class TicketServiceImpl implements TicketService {
 
     @Override
-    public void createTicketFromEmail(InboundEmailDto email) {
-        log.info("Creating ticket from email — subject: '{}', sender: '{}' <{}>",
-                email.getSubject(),
-                email.getSenderName(),
-                email.getSenderEmail());
+    public Long createTicketFromEmail(InboundEmailDto email) {
+        log.info("Creating ticket — subject: '{}', sender: '{}' <{}>",
+                email.getSubject(), email.getSenderName(), email.getSenderEmail());
 
-        // TODO: Replace with real ticket persistence in your main project
-        // Ticket ticket = new Ticket();
-        // ticket.setTitle(email.getSubject());
-        // ticket.setDescription(email.getBody());
-        // ticket.setRequesterEmail(email.getSenderEmail());
-        // ticket.setRequesterName(email.getSenderName());
-        // ticket.setCreatedAt(email.getReceivedAt());
-        // ticket.setStatus(TicketStatus.OPEN);
-        // ticketRepository.save(ticket);
+        // TODO: replace with real ticket persistence in your main project
+        // Return the saved ticket's ID so it can be stored in ProcessedEmail
+        return null;
     }
 }

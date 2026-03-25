@@ -8,6 +8,8 @@ public interface TicketService {
      * Creates a ticket record from a parsed inbound email.
      *
      * @param email the parsed email DTO
+     * @return the ID of the newly created ticket, used to populate the
+     *         ProcessedEmail audit record for traceability
      */
-    void createTicketFromEmail(InboundEmailDto email);
+    Long createTicketFromEmail(InboundEmailDto email);
 }
