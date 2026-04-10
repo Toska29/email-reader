@@ -97,6 +97,8 @@ public class OutlookOAuthTokenService {
 
             JsonNode json = objectMapper.readTree(response.body());
             String accessToken = json.get("access_token").asText();
+            log.info("Token preview: {}", accessToken.substring(0, Math.min(150, accessToken.length())));
+//            log.info("Full Access Token: {}", accessToken);
             long expiresIn = json.get("expires_in").asLong();  // seconds
 
             cachedToken = accessToken;
